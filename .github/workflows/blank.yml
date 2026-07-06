@@ -1,0 +1,11 @@
+name: Old Roblox Places Collector
+
+on:
+    schedule:
+        - cron: '0 0 * * 1'
+    
+    workflow_dispatch:
+
+jobs:
+    collector:
+        runs-on: ubuntu-latest
