@@ -7,7 +7,7 @@ use serde::{Deserialize};
 use base64::{engine::general_purpose, Engine as _};
 
 const ROULLETE_UNIVERSE_ID: u64 = 10459051210;
-const UNIVERSES_STORAGE_DATA_STORE: &str = "UniversesStorage";
+const UNIVERSES_STORAGE_DATA_STORE: &str = "PlacesStorage";
 const REQUEST_INTERVAL: Duration = Duration::from_millis(700);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const SEARCHING_RANGE: core::ops::Range<u64> = 2000..10000000;
@@ -77,7 +77,7 @@ async fn main() {
                     let name_len = name.len();
 
                     insert_bits(&mut universes_data_bytes, last_bit, &name_len.to_le_bytes(), 8);
-                    insert_bits(&mut universes_data_bytes, last_bit + 8, name.as_bytes(), name_len);
+                    insert_bits(&mut universes_data_bytes, last_bit + 8, name.as_bytes(), name_len*8);
                     last_bit += 8 + name_len
                 }
             }
