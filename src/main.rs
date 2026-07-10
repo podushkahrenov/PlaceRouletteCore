@@ -77,8 +77,8 @@ async fn main() {
                     let name_len = name.len();
 
                     insert_bits(&mut universes_data_bytes, last_bit, &name_len.to_le_bytes(), 8);
-                    insert_bits(&mut universes_data_bytes, last_bit + 8, name.as_bytes(), name_len*8);
-                    last_bit += 8 + name_len
+                    insert_bits(&mut universes_data_bytes, last_bit + 8, name.as_bytes(), name_len * 8);
+                    last_bit += 8 + name_len * 8
                 }
             }
         }
@@ -147,7 +147,7 @@ fn insert_bits(buffer: &mut Vec<u8>, bit_pos: usize, bytes: &[u8], bits_count: u
             buffer[pos] |= byte.wrapping_shr(shift);
             buffer[pos + 1] |= byte.wrapping_shl(8 - shift);
         } else {
-            buffer[pos] = byte;
+            buffer[pos] |= byte;
         }
     }
 
@@ -155,6 +155,14 @@ fn insert_bits(buffer: &mut Vec<u8>, bit_pos: usize, bytes: &[u8], bits_count: u
         let byte_i = bits_count / 8;
         let filter: u8 = (1 << tail_bits) - 1;
 
-        buffer[byte_pos + byte_i] |= (bytes[byte_i] & filter).wrapping_shr(shift);
+        let aligned = (bytes[byte_i] & filter) << (8 - tail_bits as u32);
+        let pos = byte_pos + byte_i;
+
+        if shift > 0 {
+            buffer[pos] |= aligned.wrapping_shr(shift);
+            buffer[pos + 1] |= aligned.wrapping_shl(8 - shift);
+        } else {
+            buffer[pos] |= aligned;
+        }
     }
 }
