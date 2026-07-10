@@ -8,4 +8,4 @@ reqwest = {version = "0.12", features = ["json"]}
 tokio = {version = "1", features = ["full"]}
 serde = {version = "1.0.228", features = ["derive"]}
 base64 = "0.22.1"
-bitvec = "1.1.1"
+md5 = "0.7"
