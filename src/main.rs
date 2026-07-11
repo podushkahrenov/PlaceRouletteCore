@@ -73,12 +73,25 @@ async fn main() {
             if let Ok(parsed) = response.json::<UniversesDataResponse>().await {
                 
                 for universe in &parsed.data {
+                    let creator = &universe.creator;
                     let name = &universe.name;
-                    let name_len = name.len();
+                    
+                    writebits(&mut universes_data_bytes, last_bit, &universe.id.to_le_bytes(), 53);
+                    writebits(&mut universes_data_bytes, last_bit+53, &universe.root_place_id.to_le_bytes(), 53);
+                    writebits(&mut universes_data_bytes, last_bit+106, &creator.id.to_le_bytes(), 53);
+                    writebits(&mut universes_data_bytes, last_bit+159, &name.len().to_le_bytes(), 8);
+                    writebits(&mut universes_data_bytes, last_bit+167, name.as_bytes(), name.len());
 
-                    writebits(&mut universes_data_bytes, last_bit, &name_len.to_le_bytes(), 8);
-                    writebits(&mut universes_data_bytes, last_bit + 8, name.as_bytes(), name_len * 8);
-                    last_bit += 8 + name_len * 8
+                    last_bit += 167 + name.len() + 12;
+
+                    if let Some(description) = &universe.description {
+                        writebits(&mut universes_data_bytes, last_bit-12, &description.len().to_le_bytes(), 12);
+                        writebits(&mut universes_data_bytes, last_bit, description.as_bytes(), description.len());
+                    
+                        last_bit += description.len();
+                    } else {
+                        writebits(&mut universes_data_bytes, last_bit-12, &[0u8; 12], 12);
+                    }
                 }
             }
         }
@@ -145,10 +158,10 @@ fn writebits(buffer: &mut Vec<u8>, start_bit: usize, bytes: &[u8], bits_count: u
         let target_byte = target_bit / 8;
         let target_shift = 7 - (target_bit % 8);
 
-        if target_byte < buffer.len() {
+        if target_byte > buffer.len() {
             buffer[target_byte] = buffer[target_byte] & !(1 << target_shift) | (bit << target_shift)
         } else {
-            buffer.push(bit);
+            buffer.push(bit << target_shift)
         }
     }
 }
