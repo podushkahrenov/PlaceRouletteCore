@@ -86,10 +86,6 @@ async fn main() {
         url_buf.truncate(url_buf_len);
     }
 
-    for byte in universes_data_bytes.iter().take(20) {
-        println!("{:08b}", byte);
-    }
-
     let mut universes_data_base64 = general_purpose::STANDARD.encode(universes_data_bytes);
     universes_data_base64.reserve("\"".len() * 2);
     universes_data_base64.insert_str(0, "\"");
