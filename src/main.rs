@@ -11,7 +11,7 @@ const UNIVERSES_STORAGE_DATA_STORE: &str = "PlacesStorage";
 const REQUEST_INTERVAL: Duration = Duration::from_millis(700);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const SEARCHING_RANGE: core::ops::Range<u64> = 2000..10000000;
-const SEARCHING_TIME: Duration = Duration::from_mins(1);
+const SEARCHING_TIME: Duration = Duration::from_secs(20);
 
 #[derive(Deserialize, Debug)]
 struct UniversesDataResponse {
@@ -57,11 +57,11 @@ async fn main() {
     let mut url_buf = "https://games.roblox.com/v1/games?universeIds=".to_string();
     let url_buf_len = url_buf.len();
 
-    url_buf.reserve(50 * (u64::MAX.ilog10() + 1 + 1) as usize);
-
-    let mut universes_data_bytes: Vec<u8> = vec![0; total_universes * 40];
+    url_buf.reserve(50 * (u64::MAX.ilog10()+1 + 1) as usize);
+    
+    let mut universes_data_bytes: Vec<u8> = Vec::new();
     let mut last_bit: usize = 0;
-
+    
     for i in (0..total_universes).step_by(50) {
         let universes_slice = &universes[i..(i+50).min(total_universes)];
 
@@ -76,14 +76,18 @@ async fn main() {
                     let name = &universe.name;
                     let name_len = name.len();
 
-                    insert_bits(&mut universes_data_bytes, last_bit, &name_len.to_le_bytes(), 8);
-                    insert_bits(&mut universes_data_bytes, last_bit + 8, name.as_bytes(), name_len * 8);
+                    writebits(&mut universes_data_bytes, last_bit, &name_len.to_le_bytes(), 8);
+                    writebits(&mut universes_data_bytes, last_bit + 8, name.as_bytes(), name_len * 8);
                     last_bit += 8 + name_len * 8
                 }
             }
         }
 
         url_buf.truncate(url_buf_len);
+    }
+
+    for byte in universes_data_bytes.iter().take(20) {
+        println!("{:08b}", byte);
     }
 
     let mut universes_data_base64 = general_purpose::STANDARD.encode(universes_data_bytes);
@@ -135,34 +139,20 @@ async fn save_to_datastore(client: &reqwest::Client, api_key: &str,
     println!("status: {}, body: {}", resp.status(), resp.text().await.unwrap());
 }
 
-fn insert_bits(buffer: &mut Vec<u8>, bit_pos: usize, bytes: &[u8], bits_count: usize) {
-    let byte_pos = bit_pos / 8;
-    let shift = bit_pos as u32 % 8;
+fn writebits(buffer: &mut Vec<u8>, start_bit: usize, bytes: &[u8], bits_count: usize) {
+    for bit_i in 0..bits_count {
+        let byte_i = bit_i / 8;
+        let bit_of_byte = 7 - (bit_i % 8);
+        let bit = (bytes[byte_i] >> bit_of_byte) & 1;
 
-    for byte_i in 0..bits_count / 8 {
-        let byte = bytes[byte_i];
-        let pos = byte_pos + byte_i;
+        let target_bit = start_bit + bit_i;
+        let target_byte = target_bit / 8;
+        let target_shift = 7 - (target_bit % 8);
 
-        if shift > 0 {
-            buffer[pos] |= byte.wrapping_shr(shift);
-            buffer[pos + 1] |= byte.wrapping_shl(8 - shift);
+        if target_byte < buffer.len() {
+            buffer[target_byte] = buffer[target_byte] & !(1 << target_shift) | (bit << target_shift)
         } else {
-            buffer[pos] |= byte;
-        }
-    }
-
-    let tail_bits = bits_count % 8; if tail_bits > 0 {
-        let byte_i = bits_count / 8;
-        let filter: u8 = (1 << tail_bits) - 1;
-
-        let aligned = (bytes[byte_i] & filter) << (8 - tail_bits as u32);
-        let pos = byte_pos + byte_i;
-
-        if shift > 0 {
-            buffer[pos] |= aligned.wrapping_shr(shift);
-            buffer[pos + 1] |= aligned.wrapping_shl(8 - shift);
-        } else {
-            buffer[pos] |= aligned;
+            buffer.push(bit);
         }
     }
 }
