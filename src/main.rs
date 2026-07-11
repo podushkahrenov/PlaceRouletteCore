@@ -80,15 +80,15 @@ async fn main() {
                     writebits(&mut universes_data_bytes, last_bit+53, &universe.root_place_id.to_le_bytes(), 53);
                     writebits(&mut universes_data_bytes, last_bit+106, &creator.id.to_le_bytes(), 53);
                     writebits(&mut universes_data_bytes, last_bit+159, &name.len().to_le_bytes(), 8);
-                    writebits(&mut universes_data_bytes, last_bit+167, name.as_bytes(), name.len());
+                    writebits(&mut universes_data_bytes, last_bit+167, name.as_bytes(), name.len()*8);
 
-                    last_bit += 167 + name.len() + 12;
+                    last_bit += 167 + name.len()*8 + 12;
 
                     if let Some(description) = &universe.description {
                         writebits(&mut universes_data_bytes, last_bit-12, &description.len().to_le_bytes(), 12);
-                        writebits(&mut universes_data_bytes, last_bit, description.as_bytes(), description.len());
+                        writebits(&mut universes_data_bytes, last_bit, description.as_bytes(), description.len()*8);
                     
-                        last_bit += description.len();
+                        last_bit += description.len() * 8;
                     } else {
                         writebits(&mut universes_data_bytes, last_bit-12, &[0u8; 12], 12);
                     }
@@ -97,6 +97,10 @@ async fn main() {
         }
 
         url_buf.truncate(url_buf_len);
+    }
+
+    for byte in &universes_data_bytes {
+        println!("{:08b}", byte);
     }
 
     let mut universes_data_base64 = general_purpose::STANDARD.encode(universes_data_bytes);
@@ -149,19 +153,19 @@ async fn save_to_datastore(client: &reqwest::Client, api_key: &str,
 }
 
 fn writebits(buffer: &mut Vec<u8>, start_bit: usize, bytes: &[u8], bits_count: usize) {
+    let end_byte = (start_bit + bits_count + 7) / 8;
+    if buffer.len() < end_byte {
+        buffer.resize(end_byte, 0);
+    }
+
     for bit_i in 0..bits_count {
         let byte_i = bit_i / 8;
-        let bit_of_byte = 7 - (bit_i % 8);
-        let bit = (bytes[byte_i] >> bit_of_byte) & 1;
+        let bit = (bytes[byte_i] >> (bit_i % 8)) & 1;
 
         let target_bit = start_bit + bit_i;
         let target_byte = target_bit / 8;
-        let target_shift = 7 - (target_bit % 8);
+        let target_shift = target_bit % 8;
 
-        if target_byte > buffer.len() {
-            buffer[target_byte] = buffer[target_byte] & !(1 << target_shift) | (bit << target_shift)
-        } else {
-            buffer.push(bit << target_shift)
-        }
+        buffer[target_byte] |= bit << target_shift;
     }
 }
