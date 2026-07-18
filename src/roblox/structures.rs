@@ -1,16 +1,28 @@
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
-pub struct Creator {
-    pub id: u64,
+pub enum Visibility {
+    VISIBILITY_UNSPECIFIED,
+    PUBLIC,
+    PRIVATE
+}
+
+#[derive(Deserialize, Debug)]
+pub enum AgeRating {
+    AGE_RATING_UNSPECIFIED,
+    AGE_RAING_ALL,
+    AGE_RATING_9_PLUS,
+    AGE_RATING_13_PLUS,
+    AGE_RATING_17_PLUS
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Universe {
-    pub id: u64,
-    pub root_place_id: u64,
-    pub creator: Creator,
-    pub name: String,
-    pub description: Option<String>,
+    pub display_name: String,
+    pub root_place: String,
+    pub user: String,
+    pub description: String,
+    pub age_rating: AgeRating,
+    pub visibility: Visibility
 }

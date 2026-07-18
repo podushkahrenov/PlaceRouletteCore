@@ -1,133 +1,108 @@
 mod roblox;
 
-use std::{fmt::Write, vec};
-use reqwest::Response;
+use roblox::structures::{Visibility, AgeRating, Universe};
+use std::{fmt::Write, sync::mpsc};
 use tokio::time::{sleep, Duration, Instant};
-use serde::{Deserialize};
+use serde::Deserialize;
 use base64::{engine::general_purpose, Engine as _};
 
 const ROULLETE_UNIVERSE_ID: u64 = 10459051210;
-const UNIVERSES_STORAGE_DATA_STORE: &str = "PlacesStorage";
-const REQUEST_INTERVAL: Duration = Duration::from_millis(700);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const SEARCHING_RANGE: core::ops::Range<u64> = 2000..10000000;
-const SEARCHING_TIME: Duration = Duration::from_secs(20);
+const UNIVERSES_STORAGE_DATA_STORE_NAME: &str = "PlacesStorage";
+const UNIVERSE_ID_ENDPOINT_PATH: &str = "https://apis.roblox.com/universes/v1/places/";
+const UNIVERSE_DATA_ENDPOINT_PATH: &str = "https://apis.roblox.com/cloud/v2/universes/";
+const ROBLOX_REQUEST_INTERVAL: Duration = Duration::from_millis(200);
+const PLACES_SEARCHING_RANGE: core::ops::Range<u64> = 83097738..100000000000;
+const SEARCHING_TIME: Duration = Duration::from_secs(5 * 60 - 60);
 
 #[derive(Deserialize, Debug)]
-struct UniversesDataResponse {
-    data: Vec<roblox::structures::Universe>
-}
-
-#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct UniverseIdResponse {
-    universeId: Option<u64>
+    universe_id: Option<u64>
 }
 
 #[tokio::main]
 async fn main() {
-    let open_cloud_api_key = std::env::var("OPEN_CLOUD_API_KEY").unwrap();
     let server_start = Instant::now();
-
-    let client = reqwest::Client::new();
-    let mut universes: Vec<u64> = Vec::with_capacity(1000);
-
-    let mut url_buf = "https://apis.roblox.com/universes/v1/places/".to_string();
-    let url_buf_len = url_buf.len();
+    let open_cloud_api_key = std::env::var("OPEN_CLOUD_API_KEY").unwrap();
     
-    url_buf.reserve((1 + u64::MAX.ilog10() as usize) + "/universe".len());
+    let client_1 = reqwest::Client::new();
+    let client_2 = client_1.clone();
 
-    for place_id in SEARCHING_RANGE {
-        write!(&mut url_buf, "{}/universe", place_id).unwrap();
-        
-        if let Some(response) = get_roblox_response(&client, url_buf.as_str()).await {
-            if let Ok(parsed) = response.json::<UniverseIdResponse>().await {
-                if let Some(universe_id) = parsed.universeId {universes.push(universe_id)}
-            }
+    let mut universe_id_url = UNIVERSE_ID_ENDPOINT_PATH.to_string();
+    let (id_sender, id_receiver) = mpsc::channel::<u64>();
+
+    tokio::spawn(async move {for place_id in PLACES_SEARCHING_RANGE {
+        sleep(ROBLOX_REQUEST_INTERVAL).await;
+
+        write!(&mut universe_id_url, "{}/universe", place_id).unwrap();
+        let universe_id_response = client_2.get(&universe_id_url).send().await.unwrap();
+
+        universe_id_url.truncate(UNIVERSE_ID_ENDPOINT_PATH.len());
+
+        if let Some(universe_id) = universe_id_response.json::<UniverseIdResponse>().await.unwrap().universe_id {
+            id_sender.send(universe_id).unwrap();
         }
+    }});
+    
+    let mut universe_data_url = UNIVERSE_DATA_ENDPOINT_PATH.to_string();
+    let mut universes_buffer: Vec<u8> = Vec::new();
+    let mut total_universes: u32 = 0;
+    let mut bit_offset: usize = 18;
 
-        url_buf.truncate(url_buf_len);
+    while server_start.elapsed() < SEARCHING_TIME { 
+        let universe_id = id_receiver.recv().unwrap();
+        write!(&mut universe_data_url, "{}", universe_id).unwrap();
 
-        if server_start.elapsed() >= SEARCHING_TIME {break;}
+        let universe_data_response = client_1.get(&universe_data_url)
+            .header("x-api-key", &open_cloud_api_key).send().await.unwrap();
+            
+        universe_data_url.truncate(UNIVERSE_DATA_ENDPOINT_PATH.len());
+
+        if let Ok(universe) = universe_data_response.json::<Universe>().await {
+            if !is_universe_public(&universe) {continue;}
+            total_universes += 1;
+
+            let creator_id = universe.user.strip_prefix("users/").unwrap().parse::<u64>().unwrap();
+            let root_place_id = universe.root_place.rsplit('/').next().unwrap().parse::<u64>().unwrap();
+            let name = &universe.display_name;
+            let description = &universe.description;
+
+            writebits(&mut universes_buffer, bit_offset, &universe_id.to_le_bytes(), 53);
+            writebits(&mut universes_buffer, bit_offset+53, &root_place_id.to_le_bytes(), 53);
+            writebits(&mut universes_buffer, bit_offset+106, &creator_id.to_le_bytes(), 53);
+            writebits(&mut universes_buffer, bit_offset+159, &name.len().to_le_bytes(), 8);
+            writebits(&mut universes_buffer, bit_offset+167, name.as_bytes(), name.len()*8);
+
+            bit_offset += 167 + name.len() * 8;
+
+            writebits(&mut universes_buffer, bit_offset, &description.len().to_le_bytes(), 12);
+            writebits(&mut universes_buffer, bit_offset+12, description.as_bytes(), description.len()*8);
+        
+            bit_offset += 12 + description.len();
+        }
     }
 
-    let total_universes = universes.len();
+    writebits(&mut universes_buffer, 0, &total_universes.to_le_bytes(), 18);
     println!("Universes found: {}", total_universes);
 
-
-    let mut url_buf = "https://games.roblox.com/v1/games?universeIds=".to_string();
-    let url_buf_len = url_buf.len();
-
-    url_buf.reserve(50 * (u64::MAX.ilog10()+1 + 1) as usize);
-    
-    let mut universes_data_bytes: Vec<u8> = Vec::new();
-    let mut last_bit: usize = 0;
-    
-    for i in (0..total_universes).step_by(50) {
-        let universes_slice = &universes[i..(i+50).min(total_universes)];
-
-        for universe_id in universes_slice {
-            write!(url_buf, "{},", universe_id).unwrap();
-        }
-
-        if let Some(response) = get_roblox_response(&client, url_buf.as_str()).await {
-            if let Ok(parsed) = response.json::<UniversesDataResponse>().await {
-                
-                for universe in &parsed.data {
-                    let creator = &universe.creator;
-                    let name = &universe.name;
-                    
-                    writebits(&mut universes_data_bytes, last_bit, &universe.id.to_le_bytes(), 53);
-                    writebits(&mut universes_data_bytes, last_bit+53, &universe.root_place_id.to_le_bytes(), 53);
-                    writebits(&mut universes_data_bytes, last_bit+106, &creator.id.to_le_bytes(), 53);
-                    writebits(&mut universes_data_bytes, last_bit+159, &name.len().to_le_bytes(), 8);
-                    writebits(&mut universes_data_bytes, last_bit+167, name.as_bytes(), name.len()*8);
-
-                    last_bit += 167 + name.len()*8 + 12;
-
-                    if let Some(description) = &universe.description {
-                        writebits(&mut universes_data_bytes, last_bit-12, &description.len().to_le_bytes(), 12);
-                        writebits(&mut universes_data_bytes, last_bit, description.as_bytes(), description.len()*8);
-                    
-                        last_bit += description.len() * 8;
-                    } else {
-                        writebits(&mut universes_data_bytes, last_bit-12, &[0u8; 12], 12);
-                    }
-                }
-            }
-        }
-
-        url_buf.truncate(url_buf_len);
-    }
-
-    for byte in &universes_data_bytes {
-        println!("{:08b}", byte);
-    }
-
-    let mut universes_data_base64 = general_purpose::STANDARD.encode(universes_data_bytes);
-    universes_data_base64.reserve("\"".len() * 2);
-    universes_data_base64.insert_str(0, "\"");
-    universes_data_base64.push_str("\"");
-
-    save_to_datastore(&client, open_cloud_api_key.as_str(), 
-        UNIVERSES_STORAGE_DATA_STORE, "Page_1", 
-        universes_data_base64
+    save_to_datastore(&client_1, open_cloud_api_key.as_str(), 
+        UNIVERSES_STORAGE_DATA_STORE_NAME, "Page_1",
+        buffer_data_to_json(universes_buffer)
     ).await;
-
 }
 
-async fn get_roblox_response(client: &reqwest::Client, url: &str) -> Option<Response> {
-    return loop { sleep(REQUEST_INTERVAL).await;
+fn is_universe_public(universe: &Universe) -> bool {
+    match universe.age_rating {AgeRating::AGE_RATING_13_PLUS => false, _ => {
+        match universe.visibility {Visibility::PUBLIC => true, _ => false}
+    }}
+}
 
-        if let Ok(response) = client.get(url).send().await { match response.status() {
-            reqwest::StatusCode::OK => break Some(response),
+fn buffer_data_to_json(buf: Vec<u8>) -> String {
+    let mut encoded = general_purpose::STANDARD.encode(buf);
+    encoded.insert_str(0, "\"");
+    encoded.push_str("\"");
 
-            reqwest::StatusCode::TOO_MANY_REQUESTS => {
-                sleep(REQUEST_TIMEOUT).await;
-            }
-
-            _ => break None
-        }}
-    }
+    return encoded;
 }
 
 async fn save_to_datastore(client: &reqwest::Client, api_key: &str, 
@@ -162,10 +137,10 @@ fn writebits(buffer: &mut Vec<u8>, start_bit: usize, bytes: &[u8], bits_count: u
         let byte_i = bit_i / 8;
         let bit = (bytes[byte_i] >> (bit_i % 8)) & 1;
 
-        let target_bit = start_bit + bit_i;
-        let target_byte = target_bit / 8;
-        let target_shift = target_bit % 8;
+        let tarbit = start_bit + bit_i;
+        let tarbyte = tarbit / 8;
+        let tarshift = tarbit % 8;
 
-        buffer[target_byte] |= bit << target_shift;
+        buffer[tarbyte] |= bit << tarshift;
     }
 }
