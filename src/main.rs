@@ -1,65 +1,50 @@
 mod roblox;
 
-use roblox::structures::{Visibility, AgeRating, Universe};
 use std::fmt::Write;
-use tokio::{sync::mpsc, time::{Duration, Instant, sleep}};
-use serde::Deserialize;
+use roblox::structures::{Visibility, AgeRating, Universe};
+use tokio::time::{Duration, Instant, sleep};
 use base64::{engine::general_purpose, Engine as _};
 
 const ROULLETE_UNIVERSE_ID: u64 = 10459051210;
 const UNIVERSES_STORAGE_DATA_STORE_NAME: &str = "PlacesStorage";
-const UNIVERSE_ID_ENDPOINT_PATH: &str = "https://apis.roblox.com/universes/v1/places/";
+const UNIVERSES_SEARCHING_RANGE: core::ops::Range<u64> = 10459051200..1_500_000_0000;
+const SEARCHING_TIME: Duration = Duration::from_secs(3 * 60 - 60);
 const UNIVERSE_DATA_ENDPOINT_PATH: &str = "https://apis.roblox.com/cloud/v2/universes/";
-const DATA_STORE_ENTRY_COOLDOWN: Duration = Duration::from_secs(6);
-const PLACES_SEARCHING_RANGE: core::ops::Range<u64> = 213497738..1_500_000_000;
-const SEARCHING_TIME: Duration = Duration::from_secs(30 * 60 - 60);
 
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct UniverseIdResponse {
-    universe_id: Option<u64>
+#[derive(serde::Deserialize, Debug)]
+struct DataStoreEntryResponse {
+    value: String
 }
 
 #[tokio::main]
 async fn main() {
     let server_start = Instant::now();
+
     let open_cloud_api_key = std::env::var("OPEN_CLOUD_API_KEY").unwrap();
-    
-    let client_1 = reqwest::Client::new();
-    let client_2 = reqwest::Client::new();
+    let client = reqwest::Client::new();
 
-    let mut universe_id_url = UNIVERSE_ID_ENDPOINT_PATH.to_string();
-    let (id_sender, mut id_receiver) = mpsc::unbounded_channel::<u64>();
-
-    tokio::spawn(async move {for place_id in PLACES_SEARCHING_RANGE {
-        write!(&mut universe_id_url, "{}/universe", place_id).unwrap();
-        let universe_id_response = client_2.get(&universe_id_url).send().await.unwrap();
-
-        if let Some(universe_id) = universe_id_response.json::<UniverseIdResponse>().await.unwrap().universe_id {
-            id_sender.send(universe_id).unwrap();
-        }
-
-        universe_id_url.truncate(UNIVERSE_ID_ENDPOINT_PATH.len());
-    }});
-    
     let mut universe_data_url = UNIVERSE_DATA_ENDPOINT_PATH.to_string();
-    let mut universes_buffer: Vec<u8> = Vec::new();
-    let mut bit_offset: usize = 18;
-    let mut total_universes: u32 = 0;
+    let mut total_universes: u64 = 0;
     let mut universes_scanned: u64 = 0;
 
-    while server_start.elapsed() < SEARCHING_TIME { 
-        let universe_id = id_receiver.recv().await.unwrap();
-        write!(&mut universe_data_url, "{}", universe_id).unwrap();
+    let mut universes_buffer = general_purpose::STANDARD.decode(
+        get_datastore_entry(&client, open_cloud_api_key.as_str(), 
+        UNIVERSES_STORAGE_DATA_STORE_NAME, "Page_1"
+    ).await.value).unwrap();
 
-        let universe_data_response = client_1.get(&universe_data_url)
+    let mut bit_offset: usize = 18;
+
+    for universe_id in UNIVERSES_SEARCHING_RANGE {
+        if server_start.elapsed() >= SEARCHING_TIME {break;}
+        universes_scanned += 1;
+
+        write!(&mut universe_data_url, "{}", universe_id).unwrap();
+        let universe_data_response = client.get(&universe_data_url)
             .header("x-api-key", &open_cloud_api_key).send().await.unwrap();
-            
+        
         universe_data_url.truncate(UNIVERSE_DATA_ENDPOINT_PATH.len());
 
         if let Ok(universe) = universe_data_response.json::<Universe>().await {
-            universes_scanned += 1;
-            
             if !is_universe_public(&universe) {continue;}
             total_universes += 1;
 
@@ -83,10 +68,10 @@ async fn main() {
         }
     }
 
-    writebits(&mut universes_buffer, 0, &total_universes.to_le_bytes(), 18);
+    incrementbits(&mut universes_buffer, 0, total_universes, 18);
     println!("Universes found: {}, scanned: {}", total_universes, universes_scanned);
 
-    save_to_datastore(&client_1, open_cloud_api_key.as_str(), 
+    save_to_datastore(&client, open_cloud_api_key.as_str(), 
         UNIVERSES_STORAGE_DATA_STORE_NAME, "Page_1",
         &buffer_data_to_json(universes_buffer)
     ).await;
@@ -113,22 +98,54 @@ async fn save_to_datastore(client: &reqwest::Client, api_key: &str,
     let content_md5 = general_purpose::STANDARD.encode(digest.as_ref());
     
     let url = format!(
-        "https://apis.roblox.com/datastores/v1/universes/{}/standard-datastores/datastore/entries/entry?datastoreName={}&entryKey={}",
+        "https://apis.roblox.com/cloud/v2/universes/{}/data-stores/{}/entries/{}",
         ROULLETE_UNIVERSE_ID, datastore_name, key
     );
-
+    
     loop {
-        let Ok(resp) = client.post(&url)
+        let Ok(resp) = client.patch(&url)
             .header("x-api-key", api_key)
             .header("content-md5", &content_md5)
             .header("content-type", "application/json")
             .body(value_json.clone())
             .send()
-            .await else {sleep(DATA_STORE_ENTRY_COOLDOWN).await; continue;};
+            .await else {continue;};
 
         println!("status: {}, body: {}", resp.status(), resp.text().await.unwrap());
         break;
     }
+}
+
+async fn get_datastore_entry(client: &reqwest::Client, api_key: &str, 
+    datastore_name: &str, key: &str) -> DataStoreEntryResponse
+{
+    let url = format!(
+        "https://apis.roblox.com/cloud/v2/universes/{}/data-stores/{}/entries/{}",
+        ROULLETE_UNIVERSE_ID, datastore_name, key
+    );
+
+    let response = client.get(&url)
+        .header("x-api-key", api_key).send().await.unwrap();
+
+    response.json::<DataStoreEntryResponse>().await.unwrap()
+}
+
+fn incrementbits(buffer: &mut Vec<u8>, start_bit: usize, amount: u64, bits_count: usize) {
+    let value = readbits(buffer, start_bit, bits_count);
+    writebits(buffer, start_bit, &(value + amount).to_le_bytes(), bits_count);
+}
+
+fn readbits(buffer: &Vec<u8>, start_bit: usize, bits_count: usize) -> u64 {
+    let mut result: u64 = 0;
+
+    for bit_i in 0..bits_count {
+        let bit_pos = start_bit + bit_i;
+        let bit = (buffer[bit_pos / 8] >> (7 - bit_pos % 8)) & 1;
+
+        result = (result << 1) | bit as u64;
+    }
+
+    return result;
 }
 
 fn writebits(buffer: &mut Vec<u8>, start_bit: usize, bytes: &[u8], bits_count: usize) {
