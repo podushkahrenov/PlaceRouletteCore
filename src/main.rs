@@ -1,14 +1,14 @@
 mod roblox;
 
-use std::fmt::Write;
+use std::fmt::{Write, format};
 use roblox::structures::{Visibility, AgeRating, Universe};
 use tokio::time::{Duration, Instant, sleep};
 use base64::{engine::general_purpose, Engine as _};
 
 const ROULLETE_UNIVERSE_ID: u64 = 10459051210;
 const UNIVERSES_STORAGE_DATA_STORE_NAME: &str = "PlacesStorage";
-const UNIVERSES_SEARCHING_RANGE: core::ops::Range<u64> = 10459051200..1_500_000_0000;
-const SEARCHING_TIME: Duration = Duration::from_secs(3 * 60 - 60);
+const UNIVERSES_SEARCHING_RANGE: core::ops::Range<u64> = 5903840..1_500_000_0000;
+const UNIVERSES_SEARCHING_TIME: Duration = Duration::from_secs(2 * 60 - 60);
 const UNIVERSE_DATA_ENDPOINT_PATH: &str = "https://apis.roblox.com/cloud/v2/universes/";
 
 #[derive(serde::Deserialize, Debug)]
@@ -23,19 +23,22 @@ async fn main() {
     let open_cloud_api_key = std::env::var("OPEN_CLOUD_API_KEY").unwrap();
     let client = reqwest::Client::new();
 
-    let mut universe_data_url = UNIVERSE_DATA_ENDPOINT_PATH.to_string();
-    let mut total_universes: u64 = 0;
-    let mut universes_scanned: u64 = 0;
-
     let mut universes_buffer = general_purpose::STANDARD.decode(
         get_datastore_entry(&client, open_cloud_api_key.as_str(), 
         UNIVERSES_STORAGE_DATA_STORE_NAME, "Page_1"
     ).await.value).unwrap();
 
-    let mut bit_offset: usize = 18;
+    let mut bit_offset = if universes_buffer.len() >= 3 {
+        let last_byte_bit = readbits(&universes_buffer, 18, 3);
+        universes_buffer.len() * 8 + last_byte_bit as usize
+    } else { 21 };
+
+    let mut universe_data_url = UNIVERSE_DATA_ENDPOINT_PATH.to_string();
+    let mut total_universes: u64 = 0;
+    let mut universes_scanned: u64 = 0;
 
     for universe_id in UNIVERSES_SEARCHING_RANGE {
-        if server_start.elapsed() >= SEARCHING_TIME {break;}
+        if server_start.elapsed() >= UNIVERSES_SEARCHING_TIME {break;}
         universes_scanned += 1;
 
         write!(&mut universe_data_url, "{}", universe_id).unwrap();
@@ -69,11 +72,12 @@ async fn main() {
     }
 
     incrementbits(&mut universes_buffer, 0, total_universes, 18);
+    writebits(&mut universes_buffer, 18, &(bit_offset % 8).to_le_bytes(), 3);
     println!("Universes found: {}, scanned: {}", total_universes, universes_scanned);
 
     save_to_datastore(&client, open_cloud_api_key.as_str(), 
         UNIVERSES_STORAGE_DATA_STORE_NAME, "Page_1",
-        &buffer_data_to_json(universes_buffer)
+        general_purpose::STANDARD.encode(universes_buffer).as_str()
     ).await;
 }
 
@@ -83,18 +87,12 @@ fn is_universe_public(universe: &Universe) -> bool {
     }}
 }
 
-fn buffer_data_to_json(buf: Vec<u8>) -> String {
-    let mut encoded = general_purpose::STANDARD.encode(buf);
-    encoded.insert_str(0, "\"");
-    encoded.push_str("\"");
-
-    return encoded;
-}
-
 async fn save_to_datastore(client: &reqwest::Client, api_key: &str, 
-    datastore_name: &str, key: &str, value_json: &String) 
+    datastore_name: &str, key: &str, value: &str) 
 {
-    let digest = md5::compute(value_json.as_bytes());
+    let body = format!(r#"{{"value": "{}"}}"#, value);
+
+    let digest = md5::compute(value.as_bytes());
     let content_md5 = general_purpose::STANDARD.encode(digest.as_ref());
     
     let url = format!(
@@ -107,7 +105,7 @@ async fn save_to_datastore(client: &reqwest::Client, api_key: &str,
             .header("x-api-key", api_key)
             .header("content-md5", &content_md5)
             .header("content-type", "application/json")
-            .body(value_json.clone())
+            .body(body.clone())
             .send()
             .await else {continue;};
 
