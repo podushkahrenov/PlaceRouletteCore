@@ -7,8 +7,8 @@ use base64::{engine::general_purpose, Engine as _};
 
 const ROULLETE_UNIVERSE_ID: u64 = 10459051210;
 const UNIVERSES_STORAGE_DATA_STORE_NAME: &str = "PlacesStorage";
-const UNIVERSES_SEARCHING_RANGE: core::ops::Range<u64> = 5903840..1_500_000_0000;
-const UNIVERSES_SEARCHING_TIME: Duration = Duration::from_secs(2 * 60 - 60);
+const UNIVERSES_SEARCHING_RANGE: core::ops::Range<u64> = 10459051212..1_500_000_0000;
+const UNIVERSES_SEARCHING_TIME: Duration = Duration::from_secs(10);
 const UNIVERSE_DATA_ENDPOINT_PATH: &str = "https://apis.roblox.com/cloud/v2/universes/";
 
 #[derive(serde::Deserialize, Debug)]
@@ -28,13 +28,14 @@ async fn main() {
         UNIVERSES_STORAGE_DATA_STORE_NAME, "Page_1"
     ).await.value).unwrap();
 
-    let mut bit_offset = if universes_buffer.len() >= 3 {
+    let (mut bit_offset, mut total_universes) = if universes_buffer.len() >= 3 {
         let last_byte_bit = readbits(&universes_buffer, 18, 3);
-        universes_buffer.len() * 8 + last_byte_bit as usize
-    } else { 21 };
+        let total_universes = readbits(&universes_buffer, 0, 18);
+        (universes_buffer.len() * 8 + last_byte_bit as usize, total_universes)
+
+    } else { (21, 0) };
 
     let mut universe_data_url = UNIVERSE_DATA_ENDPOINT_PATH.to_string();
-    let mut total_universes: u64 = 0;
     let mut universes_scanned: u64 = 0;
 
     for universe_id in UNIVERSES_SEARCHING_RANGE {
@@ -71,9 +72,9 @@ async fn main() {
         }
     }
 
-    incrementbits(&mut universes_buffer, 0, total_universes, 18);
+    writebits(&mut universes_buffer, 0, &total_universes.to_le_bytes(), 18);
     writebits(&mut universes_buffer, 18, &(bit_offset % 8).to_le_bytes(), 3);
-    println!("Universes found: {}, scanned: {}", total_universes, universes_scanned);
+    println!("Universes in database: {}, scanned: {}", total_universes, universes_scanned);
 
     save_to_datastore(&client, open_cloud_api_key.as_str(), 
         UNIVERSES_STORAGE_DATA_STORE_NAME, "Page_1",
@@ -128,19 +129,14 @@ async fn get_datastore_entry(client: &reqwest::Client, api_key: &str,
     response.json::<DataStoreEntryResponse>().await.unwrap()
 }
 
-fn incrementbits(buffer: &mut Vec<u8>, start_bit: usize, amount: u64, bits_count: usize) {
-    let value = readbits(buffer, start_bit, bits_count);
-    writebits(buffer, start_bit, &(value + amount).to_le_bytes(), bits_count);
-}
-
 fn readbits(buffer: &Vec<u8>, start_bit: usize, bits_count: usize) -> u64 {
     let mut result: u64 = 0;
 
     for bit_i in 0..bits_count {
         let bit_pos = start_bit + bit_i;
-        let bit = (buffer[bit_pos / 8] >> (7 - bit_pos % 8)) & 1;
+        let bit = (buffer[bit_pos / 8] >> (bit_pos % 8)) & 1;
 
-        result = (result << 1) | bit as u64;
+        result |= (bit as u64) << bit_i;
     }
 
     return result;
