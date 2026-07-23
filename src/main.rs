@@ -1,14 +1,15 @@
 mod roblox;
 
-use std::fmt::{Write, format};
+use std::fmt::Write;
+use reqwest::Error;
 use roblox::structures::{Visibility, AgeRating, Universe};
-use tokio::time::{Duration, Instant, sleep};
+use tokio::time::{Duration, Instant};
 use base64::{engine::general_purpose, Engine as _};
 
 const ROULLETE_UNIVERSE_ID: u64 = 10459051210;
 const UNIVERSES_STORAGE_DATA_STORE_NAME: &str = "PlacesStorage";
-const UNIVERSES_SEARCHING_RANGE: core::ops::Range<u64> = 10459051212..1_500_000_0000;
-const UNIVERSES_SEARCHING_TIME: Duration = Duration::from_secs(10);
+const UNIVERSES_SEARCHING_RANGE: core::ops::Range<u64> = 15993840..1_500_000_0000;
+const UNIVERSES_SEARCHING_TIME: Duration = Duration::from_mins(120);
 const UNIVERSE_DATA_ENDPOINT_PATH: &str = "https://apis.roblox.com/cloud/v2/universes/";
 
 #[derive(serde::Deserialize, Debug)]
@@ -20,18 +21,19 @@ struct DataStoreEntryResponse {
 async fn main() {
     let server_start = Instant::now();
 
-    let open_cloud_api_key = std::env::var("OPEN_CLOUD_API_KEY").unwrap();
+    let open_cloud_api_key = std::env::var("OPEN_CLOUD_API_KEY").expect(
+        "Not found OPEN_CLOUD_API_KEY in env");
     let client = reqwest::Client::new();
 
     let mut universes_buffer = general_purpose::STANDARD.decode(
         get_datastore_entry(&client, open_cloud_api_key.as_str(), 
         UNIVERSES_STORAGE_DATA_STORE_NAME, "Page_1"
-    ).await.value).unwrap();
+    ).await.unwrap().value).unwrap();
 
     let (mut bit_offset, mut total_universes) = if universes_buffer.len() >= 3 {
         let last_byte_bit = readbits(&universes_buffer, 18, 3);
         let total_universes = readbits(&universes_buffer, 0, 18);
-        (universes_buffer.len() * 8 + last_byte_bit as usize, total_universes)
+        ((universes_buffer.len()-1).max(0) * 8 + last_byte_bit as usize, total_universes)
 
     } else { (21, 0) };
 
@@ -51,6 +53,8 @@ async fn main() {
         if let Ok(universe) = universe_data_response.json::<Universe>().await {
             if !is_universe_public(&universe) {continue;}
             total_universes += 1;
+
+            eprintln!("founded universe: {:?}", universe);
 
             let creator_id = universe.user.strip_prefix("users/").unwrap().parse::<u64>().unwrap();
             let root_place_id = universe.root_place.rsplit('/').next().unwrap().parse::<u64>().unwrap();
@@ -80,12 +84,15 @@ async fn main() {
         UNIVERSES_STORAGE_DATA_STORE_NAME, "Page_1",
         general_purpose::STANDARD.encode(universes_buffer).as_str()
     ).await;
+
+    std::io::Write::flush(&mut std::io::stdout()).unwrap();
 }
 
 fn is_universe_public(universe: &Universe) -> bool {
-    match universe.age_rating {AgeRating::AGE_RATING_13_PLUS => false, _ => {
-        match universe.visibility {Visibility::PUBLIC => true, _ => false}
-    }}
+    match universe.age_rating {
+        AgeRating::AGE_RATING_13_PLUS => false,
+        _ => match universe.visibility {Visibility::PUBLIC => true, _ => false}
+    }
 }
 
 async fn save_to_datastore(client: &reqwest::Client, api_key: &str, 
@@ -116,7 +123,7 @@ async fn save_to_datastore(client: &reqwest::Client, api_key: &str,
 }
 
 async fn get_datastore_entry(client: &reqwest::Client, api_key: &str, 
-    datastore_name: &str, key: &str) -> DataStoreEntryResponse
+    datastore_name: &str, key: &str) -> Result<DataStoreEntryResponse, Error>
 {
     let url = format!(
         "https://apis.roblox.com/cloud/v2/universes/{}/data-stores/{}/entries/{}",
@@ -124,9 +131,9 @@ async fn get_datastore_entry(client: &reqwest::Client, api_key: &str,
     );
 
     let response = client.get(&url)
-        .header("x-api-key", api_key).send().await.unwrap();
+        .header("x-api-key", api_key).send().await?;
 
-    response.json::<DataStoreEntryResponse>().await.unwrap()
+    Ok(response.json::<DataStoreEntryResponse>().await.unwrap())
 }
 
 fn readbits(buffer: &Vec<u8>, start_bit: usize, bits_count: usize) -> u64 {
@@ -156,6 +163,6 @@ fn writebits(buffer: &mut Vec<u8>, start_bit: usize, bytes: &[u8], bits_count: u
         let tarbyte = tarbit / 8;
         let tarshift = tarbit % 8;
 
-        buffer[tarbyte] |= bit << tarshift;
+        buffer[tarbyte] = (buffer[tarbyte] & !(1 << tarshift)) | (bit << tarshift);
     }
 }
